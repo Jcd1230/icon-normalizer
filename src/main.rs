@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process;
 
@@ -13,10 +14,10 @@ mod processor;
     long_about = "auto-icon takes an image, removes the background using flood fill, crops it to the content boundaries, pads/centers it, and resizes it to a square icon."
 )]
 struct Args {
-    /// Path to the input image file.
-    input: PathBuf,
+    /// Path to the input image file. If omitted, and --clipboard is set, reads from clipboard.
+    input: Option<PathBuf>,
 
-    /// Path to the output image file (defaults to <input_stem>_icon.png).
+    /// Path to the output image file (defaults to <input_stem>_icon.png). If omitted, and --clipboard is set, writes to clipboard.
     output: Option<PathBuf>,
 
     /// Target output square size in pixels (e.g., 256, 512, 1024).
@@ -32,12 +33,79 @@ struct Args {
     feather: u32,
 
     /// Padding percentage around the icon content (relative to square side, 0.0 to 45.0).
-    #[arg(short, long, default_value_t = 10.0)]
+    #[arg(short, long, default_value_t = 1.0)]
     padding: f32,
 
     /// Skip background removal step (if the image already has transparency).
     #[arg(long)]
     no_flood: bool,
+
+    /// Read input from and/or write output to the Wayland system clipboard (using wl-paste/wl-copy).
+    #[arg(short, long)]
+    clipboard: bool,
+}
+
+fn read_clipboard_image() -> Vec<u8> {
+    let output = process::Command::new("wl-paste")
+        .arg("-t")
+        .arg("image/png")
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => out.stdout,
+        Ok(out) => {
+            let err_msg = String::from_utf8_lossy(&out.stderr);
+            eprintln!("Error running wl-paste: {}", err_msg);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to execute wl-paste: {}", e);
+            eprintln!("Make sure wl-clipboard is installed and you are running under a Wayland session.");
+            process::exit(1);
+        }
+    }
+}
+
+fn write_clipboard_image(img: &image::RgbaImage) {
+    let mut png_bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    if let Err(e) = img.write_to(&mut cursor, image::ImageFormat::Png) {
+        eprintln!("Failed to encode output image as PNG: {}", e);
+        process::exit(1);
+    }
+
+    let mut child = process::Command::new("wl-copy")
+        .arg("-t")
+        .arg("image/png")
+        .stdin(process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to execute wl-copy: {}", e);
+            eprintln!("Make sure wl-clipboard is installed.");
+            process::exit(1);
+        });
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        if let Err(e) = stdin.write_all(&png_bytes) {
+            eprintln!("Failed to write image data to wl-copy stdin: {}", e);
+            process::exit(1);
+        }
+    }
+
+    match child.wait() {
+        Ok(status) if status.success() => {
+            println!("Output successfully copied to clipboard.");
+        }
+        Ok(status) => {
+            eprintln!("wl-copy exited with error status: {}", status);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to wait for wl-copy: {}", e);
+            process::exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -53,13 +121,34 @@ fn main() {
         process::exit(1);
     }
 
+    let read_from_clipboard = args.clipboard && args.input.is_none();
+    let write_to_clipboard = args.clipboard && args.output.is_none();
+
+    if !read_from_clipboard && args.input.is_none() {
+        eprintln!("Error: Please specify an input image path, or use the --clipboard / -c flag to read from clipboard.");
+        process::exit(1);
+    }
+
     // 2. Load input image
-    println!("Loading image: {}", args.input.display());
-    let img_source = match image::open(&args.input) {
-        Ok(img) => img,
-        Err(e) => {
-            eprintln!("Error loading image: {}", e);
-            process::exit(1);
+    let img_source = if read_from_clipboard {
+        println!("Reading image from clipboard...");
+        let bytes = read_clipboard_image();
+        match image::load_from_memory(&bytes) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("Error decoding image from clipboard: {}", e);
+                process::exit(1);
+            }
+        }
+    } else {
+        let input_path = args.input.as_ref().unwrap();
+        println!("Loading image: {}", input_path.display());
+        match image::open(input_path) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("Error loading image: {}", e);
+                process::exit(1);
+            }
         }
     };
 
@@ -109,30 +198,33 @@ fn main() {
     );
     let result = processor::square_center_and_resize(&cropped, args.size, args.padding);
 
-    // 6. Determine output file path
-    let output_path = match args.output {
-        Some(path) => path,
-        None => {
-            let mut parent = args.input.parent().unwrap_or(&PathBuf::new()).to_path_buf();
-            let stem = args
-                .input
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("output");
-            parent.push(format!("{}_icon.png", stem));
-            parent
-        }
-    };
+    // 6. Save or copy output
+    if write_to_clipboard {
+        write_clipboard_image(&result);
+    } else {
+        let output_path = match &args.output {
+            Some(path) => path.clone(),
+            None => {
+                let input_path = args.input.as_ref().unwrap();
+                let mut parent = input_path.parent().unwrap_or(&PathBuf::new()).to_path_buf();
+                let stem = input_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("output");
+                parent.push(format!("{}_icon.png", stem));
+                parent
+            }
+        };
 
-    // 7. Save output image
-    println!("Saving output to: {}", output_path.display());
-    match result.save(&output_path) {
-        Ok(_) => {
-            println!("Done! Successfully created icon.");
-        }
-        Err(e) => {
-            eprintln!("Error saving output image: {}", e);
-            process::exit(1);
+        println!("Saving output to: {}", output_path.display());
+        match result.save(&output_path) {
+            Ok(_) => {
+                println!("Done! Successfully created icon.");
+            }
+            Err(e) => {
+                eprintln!("Error saving output image: {}", e);
+                process::exit(1);
+            }
         }
     }
 }
