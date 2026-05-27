@@ -7,4 +7,5 @@ default-run = "icon-normalizer"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
+clap_complete = "4.6.5"
 image = "0.25.10"

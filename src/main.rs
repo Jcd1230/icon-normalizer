@@ -6,6 +6,47 @@ use std::process;
 mod floodfill;
 mod processor;
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputFormat {
+    Png,
+    Jpeg,
+    Webp,
+    Ico,
+    Bmp,
+}
+
+impl OutputFormat {
+    fn to_image_format(self) -> image::ImageFormat {
+        match self {
+            OutputFormat::Png => image::ImageFormat::Png,
+            OutputFormat::Jpeg => image::ImageFormat::Jpeg,
+            OutputFormat::Webp => image::ImageFormat::WebP,
+            OutputFormat::Ico => image::ImageFormat::Ico,
+            OutputFormat::Bmp => image::ImageFormat::Bmp,
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Png => "png",
+            OutputFormat::Jpeg => "jpg",
+            OutputFormat::Webp => "webp",
+            OutputFormat::Ico => "ico",
+            OutputFormat::Bmp => "bmp",
+        }
+    }
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// Generate shell completions for the specified shell.
+    Completions {
+        /// The shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "icon-normalizer")]
 #[command(version)]
@@ -17,10 +58,9 @@ struct Args {
     /// Path to the input image file. If omitted, and --clipboard is set, reads from clipboard.
     input: Option<PathBuf>,
 
-    /// Path to the output image file (defaults to <input_stem>_icon.png).
+    /// Path to the output image file (defaults to <input_stem>_icon.<format>).
     #[arg(short, long)]
     output: Option<PathBuf>,
-
 
     /// Target output square size in pixels (e.g., 256, 512, 1024).
     #[arg(short, long, default_value_t = 512)]
@@ -45,6 +85,48 @@ struct Args {
     /// Read input from and/or write output to the Wayland system clipboard (using wl-paste/wl-copy).
     #[arg(short, long)]
     clipboard: bool,
+
+    /// Force output format (png, jpeg, webp, ico, bmp). Defaults to png if output format cannot be inferred.
+    #[arg(long, value_enum)]
+    format: Option<OutputFormat>,
+
+    /// Show verbose debug output, including timing information.
+    #[arg(short, long, conflicts_with = "quiet")]
+    verbose: bool,
+
+    /// Suppress all output except errors.
+    #[arg(short, long, conflicts_with = "verbose")]
+    quiet: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+struct Logger {
+    verbose: bool,
+    quiet: bool,
+}
+
+impl Logger {
+    fn new(verbose: bool, quiet: bool) -> Self {
+        Self { verbose, quiet }
+    }
+
+    fn info(&self, msg: impl AsRef<str>) {
+        if !self.quiet {
+            println!("{}", msg.as_ref());
+        }
+    }
+
+    fn debug(&self, msg: impl AsRef<str>) {
+        if self.verbose && !self.quiet {
+            println!("[DEBUG] {}", msg.as_ref());
+        }
+    }
+
+    fn error(&self, msg: impl AsRef<str>) {
+        eprintln!("Error: {}", msg.as_ref());
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -153,11 +235,12 @@ fn read_clipboard_image() -> Vec<u8> {
     }
 }
 
-fn write_clipboard_image(img: &image::RgbaImage) {
-    let mut png_bytes = Vec::new();
-    let mut cursor = std::io::Cursor::new(&mut png_bytes);
-    if let Err(e) = img.write_to(&mut cursor, image::ImageFormat::Png) {
-        eprintln!("Failed to encode output image as PNG: {}", e);
+fn write_clipboard_image(img: &image::RgbaImage, format: OutputFormat, logger: &Logger) {
+    let mut img_bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut img_bytes);
+    let image_format = format.to_image_format();
+    if let Err(e) = img.write_to(&mut cursor, image_format) {
+        eprintln!("Failed to encode output image: {}", e);
         process::exit(1);
     }
 
@@ -166,10 +249,19 @@ fn write_clipboard_image(img: &image::RgbaImage) {
         let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
         let cmd = if is_wayland { "wl-copy" } else { "xclip" };
         let mut child_cmd = process::Command::new(cmd);
+        
+        let mime_type = match format {
+            OutputFormat::Png => "image/png",
+            OutputFormat::Jpeg => "image/jpeg",
+            OutputFormat::Webp => "image/webp",
+            OutputFormat::Ico => "image/x-icon",
+            OutputFormat::Bmp => "image/bmp",
+        };
+
         if is_wayland {
-            child_cmd.arg("-t").arg("image/png");
+            child_cmd.arg("-t").arg(mime_type);
         } else {
-            child_cmd.arg("-selection").arg("clipboard").arg("-t").arg("image/png");
+            child_cmd.arg("-selection").arg("clipboard").arg("-t").arg(mime_type);
         }
 
         let mut child = child_cmd
@@ -182,7 +274,7 @@ fn write_clipboard_image(img: &image::RgbaImage) {
 
         {
             let stdin = child.stdin.as_mut().unwrap();
-            if let Err(e) = stdin.write_all(&png_bytes) {
+            if let Err(e) = stdin.write_all(&img_bytes) {
                 eprintln!("Failed to write image data to {} stdin: {}", cmd, e);
                 process::exit(1);
             }
@@ -190,7 +282,7 @@ fn write_clipboard_image(img: &image::RgbaImage) {
 
         match child.wait() {
             Ok(status) if status.success() => {
-                println!("Output successfully copied to clipboard.");
+                logger.info("Output successfully copied to clipboard.");
             }
             Ok(status) => {
                 eprintln!("{} exited with error status: {}", cmd, status);
@@ -206,12 +298,27 @@ fn write_clipboard_image(img: &image::RgbaImage) {
 
     #[cfg(target_os = "macos")]
     {
+        let (temp_ext, apple_class, encoded_bytes) = match format {
+            OutputFormat::Jpeg => ("jpg", "JPEG picture", img_bytes),
+            _ => {
+                if format == OutputFormat::Png {
+                    ("png", "«class PNGf»", img_bytes)
+                } else {
+                    let mut png_fallback = Vec::new();
+                    let mut cursor = std::io::Cursor::new(&mut png_fallback);
+                    let _ = img.write_to(&mut cursor, image::ImageFormat::Png);
+                    ("png", "«class PNGf»", png_fallback)
+                }
+            }
+        };
+
         let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("icon_normalizer_out.png");
-        if std::fs::write(&temp_file, &png_bytes).is_ok() {
+        let temp_file = temp_dir.join(format!("icon_normalizer_out.{}", temp_ext));
+        if std::fs::write(&temp_file, &encoded_bytes).is_ok() {
             let script = format!(
-                "set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)",
-                temp_file.to_string_lossy()
+                "set the clipboard to (read (POSIX file \"{}\") as {})",
+                temp_file.to_string_lossy(),
+                apple_class
             );
             let output = process::Command::new("osascript")
                 .arg("-e")
@@ -220,7 +327,7 @@ fn write_clipboard_image(img: &image::RgbaImage) {
             let _ = std::fs::remove_file(&temp_file);
             if let Ok(out) = output {
                 if out.status.success() {
-                    println!("Output successfully copied to clipboard.");
+                    logger.info("Output successfully copied to clipboard.");
                     return;
                 }
             }
@@ -231,9 +338,24 @@ fn write_clipboard_image(img: &image::RgbaImage) {
 
     #[cfg(target_os = "windows")]
     {
+        let (temp_ext, encoded_bytes) = match format {
+            OutputFormat::Jpeg => ("jpg", img_bytes),
+            OutputFormat::Bmp => ("bmp", img_bytes),
+            _ => {
+                if format == OutputFormat::Png {
+                    ("png", img_bytes)
+                } else {
+                    let mut png_fallback = Vec::new();
+                    let mut cursor = std::io::Cursor::new(&mut png_fallback);
+                    let _ = img.write_to(&mut cursor, image::ImageFormat::Png);
+                    ("png", png_fallback)
+                }
+            }
+        };
+
         let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("icon_normalizer_out.png");
-        if std::fs::write(&temp_file, &png_bytes).is_ok() {
+        let temp_file = temp_dir.join(format!("icon_normalizer_out.{}", temp_ext));
+        if std::fs::write(&temp_file, &encoded_bytes).is_ok() {
             let ps_script = format!(
                 "Add-Type -AssemblyName System.Windows.Forms; \
                  $img = [System.Drawing.Image]::FromFile('{}'); \
@@ -248,7 +370,7 @@ fn write_clipboard_image(img: &image::RgbaImage) {
             let _ = std::fs::remove_file(&temp_file);
             if let Ok(out) = output {
                 if out.status.success() {
-                    println!("Output successfully copied to clipboard.");
+                    logger.info("Output successfully copied to clipboard.");
                     return;
                 }
             }
@@ -264,17 +386,27 @@ fn write_clipboard_image(img: &image::RgbaImage) {
     }
 }
 
-
 fn main() {
     let args = Args::parse();
 
+    // Handle completions subcommand first before any other validation or execution
+    if let Some(Commands::Completions { shell }) = args.command {
+        use clap::CommandFactory;
+        let mut cmd = Args::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return;
+    }
+
+    let logger = Logger::new(args.verbose, args.quiet);
+
     // 1. Validate inputs
     if args.size == 0 {
-        eprintln!("Error: Target size must be greater than 0.");
+        logger.error("Target size must be greater than 0.");
         process::exit(1);
     }
     if args.padding < 0.0 || args.padding >= 50.0 {
-        eprintln!("Error: Padding must be between 0.0 and 50.0 percent.");
+        logger.error("Padding must be between 0.0 and 50.0 percent.");
         process::exit(1);
     }
 
@@ -282,61 +414,86 @@ fn main() {
     let write_to_clipboard = args.clipboard && args.output.is_none();
 
     if !read_from_clipboard && args.input.is_none() {
-        eprintln!("Error: Please specify an input image path, or use the --clipboard / -c flag to read from clipboard.");
+        logger.error("Please specify an input image path, or use the --clipboard / -c flag to read from clipboard.");
         process::exit(1);
     }
 
+    // Determine the target output format
+    let format = args.format.unwrap_or_else(|| {
+        if let Some(ref out_path) = args.output {
+            if let Ok(inferred) = image::ImageFormat::from_path(out_path) {
+                match inferred {
+                    image::ImageFormat::Png => OutputFormat::Png,
+                    image::ImageFormat::Jpeg => OutputFormat::Jpeg,
+                    image::ImageFormat::WebP => OutputFormat::Webp,
+                    image::ImageFormat::Ico => OutputFormat::Ico,
+                    image::ImageFormat::Bmp => OutputFormat::Bmp,
+                    _ => OutputFormat::Png, // Default fallback
+                }
+            } else {
+                OutputFormat::Png
+            }
+        } else {
+            OutputFormat::Png
+        }
+    });
+
     // 2. Load input image
+    let load_start = std::time::Instant::now();
     let img_source = if read_from_clipboard {
-        println!("Reading image from clipboard...");
+        logger.info("Reading image from clipboard...");
         let bytes = read_clipboard_image();
         match image::load_from_memory(&bytes) {
             Ok(img) => img,
             Err(e) => {
-                eprintln!("Error decoding image from clipboard: {}", e);
+                logger.error(format!("Error decoding image from clipboard: {}", e));
                 process::exit(1);
             }
         }
     } else {
         let input_path = args.input.as_ref().unwrap();
-        println!("Loading image: {}", input_path.display());
+        logger.info(format!("Loading image: {}", input_path.display()));
         match image::open(input_path) {
             Ok(img) => img,
             Err(e) => {
-                eprintln!("Error loading image: {}", e);
+                logger.error(format!("Error loading image: {}", e));
                 process::exit(1);
             }
         }
     };
+    logger.debug(format!("Image loaded in {:?}", load_start.elapsed()));
 
     let mut img = img_source.to_rgba8();
     let (orig_w, orig_h) = img.dimensions();
-    println!("Original dimensions: {}x{}", orig_w, orig_h);
+    logger.debug(format!("Original dimensions: {}x{}", orig_w, orig_h));
 
     // 3. Background Removal
     if !args.no_flood {
-        println!(
+        logger.info(format!(
             "Running background removal (flood fill tolerance: {}, feather radius: {})...",
             args.tolerance, args.feather
-        );
+        ));
+        let flood_start = std::time::Instant::now();
         let mask = floodfill::generate_flood_fill_mask(&img, args.tolerance);
         let feathered = floodfill::compute_feathered_mask(&mask, args.feather);
         img = floodfill::apply_mask(&img, &feathered);
+        logger.debug(format!("Background removal completed in {:?}", flood_start.elapsed()));
     } else {
-        println!("Skipping background removal.");
+        logger.info("Skipping background removal.");
     }
 
     // 4. Bounding Box & Autocrop
-    println!("Locating content bounding box...");
+    logger.info("Locating content bounding box...");
+    let crop_start = std::time::Instant::now();
     let bbox = match processor::find_bounding_box(&img, 5) {
         Some(box_coords) => box_coords,
         None => {
-            eprintln!("Error: Image became completely transparent (no content found).");
+            logger.error("Image became completely transparent (no content found).");
             process::exit(1);
         }
     };
     let (min_x, min_y, max_x, max_y) = bbox;
-    println!(
+    logger.debug(format!(
         "Content bounding box: ({}, {}) to ({}, {}), width: {}, height: {}",
         min_x,
         min_y,
@@ -344,20 +501,25 @@ fn main() {
         max_y,
         max_x - min_x + 1,
         max_y - min_y + 1
-    );
+    ));
 
     let cropped = processor::crop_image(&img, bbox);
+    logger.debug(format!("Autocrop completed in {:?}", crop_start.elapsed()));
 
     // 5. Square, Center, Resize
-    println!(
+    logger.info(format!(
         "Centering and resizing to {}x{} with {}% padding...",
         args.size, args.size, args.padding
-    );
+    ));
+    let resize_start = std::time::Instant::now();
     let result = processor::square_center_and_resize(&cropped, args.size, args.padding);
+    logger.debug(format!("Centering and resizing completed in {:?}", resize_start.elapsed()));
 
     // 6. Save or copy output
+    let save_start = std::time::Instant::now();
     if write_to_clipboard {
-        write_clipboard_image(&result);
+        write_clipboard_image(&result, format, &logger);
+        logger.debug(format!("Clipboard write completed in {:?}", save_start.elapsed()));
     } else {
         let output_path = match &args.output {
             Some(path) => path.clone(),
@@ -368,20 +530,22 @@ fn main() {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("output");
-                parent.push(format!("{}_icon.png", stem));
+                parent.push(format!("{}_icon.{}", stem, format.extension()));
                 parent
             }
         };
 
-        println!("Saving output to: {}", output_path.display());
-        match result.save(&output_path) {
+        logger.info(format!("Saving output to: {}", output_path.display()));
+        let image_format = format.to_image_format();
+        match result.save_with_format(&output_path, image_format) {
             Ok(_) => {
-                println!("Done! Successfully created icon.");
+                logger.info("Done! Successfully created icon.");
             }
             Err(e) => {
-                eprintln!("Error saving output image: {}", e);
+                logger.error(format!("Error saving output image: {}", e));
                 process::exit(1);
             }
         }
+        logger.debug(format!("File save completed in {:?}", save_start.elapsed()));
     }
 }
