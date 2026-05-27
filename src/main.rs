@@ -17,8 +17,10 @@ struct Args {
     /// Path to the input image file. If omitted, and --clipboard is set, reads from clipboard.
     input: Option<PathBuf>,
 
-    /// Path to the output image file (defaults to <input_stem>_icon.png). If omitted, and --clipboard is set, writes to clipboard.
+    /// Path to the output image file (defaults to <input_stem>_icon.png).
+    #[arg(short, long)]
     output: Option<PathBuf>,
+
 
     /// Target output square size in pixels (e.g., 256, 512, 1024).
     #[arg(short, long, default_value_t = 512)]
