@@ -1,0 +1,10 @@
+[package]
+name = "auto-icon"
+version = "0.1.0"
+edition = "2024"
+default-run = "auto-icon"
+
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+image = "0.25.10"
