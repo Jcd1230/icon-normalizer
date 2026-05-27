@@ -36,7 +36,7 @@ jobs:
       - name: Build and upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: auto-icon
+          bin: icon-normalizer
           target: ${{ matrix.target }}
           tar: unix
           zip: windows

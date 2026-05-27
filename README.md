@@ -1,6 +1,6 @@
-# auto-icon
+# icon-normalizer
 
-`auto-icon` is a fast, lightweight CLI tool written in Rust to automatically clean up raw images (like AI-generated assets) and format them into high-quality transparent, squared, and centered icons.
+`icon-normalizer` is a fast, lightweight CLI tool written in Rust to automatically clean up raw images (like AI-generated assets) and format them into high-quality transparent, squared, and centered icons.
 
 ## Features
 
@@ -20,7 +20,7 @@ Ensure you have Rust and Cargo installed. Then run:
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/auto-icon`.
+The compiled binary will be located at `target/release/icon-normalizer`.
 
 ### Prerequisites for Clipboard Support (Wayland)
 To use the clipboard features, you must have `wl-clipboard` installed on your system:
@@ -32,7 +32,7 @@ To use the clipboard features, you must have `wl-clipboard` installed on your sy
 ## Usage
 
 ```bash
-auto-icon [INPUT_PATH] [FLAGS] [OPTIONS]
+icon-normalizer [INPUT_PATH] [FLAGS] [OPTIONS]
 ```
 
 ### Options
@@ -48,19 +48,19 @@ auto-icon [INPUT_PATH] [FLAGS] [OPTIONS]
 
 1. **Read Clipboard $\to$ Clean $\to$ Write Clipboard**:
    ```bash
-   auto-icon -c
+   icon-normalizer -c
    ```
 2. **Read Clipboard $\to$ Clean $\to$ Save to File**:
    ```bash
-   auto-icon -c -o cleaned_icon.png
+   icon-normalizer -c -o cleaned_icon.png
    ```
 3. **Read File $\to$ Clean $\to$ Copy to Clipboard**:
    ```bash
-   auto-icon raw_image.png -c
+   icon-normalizer raw_image.png -c
    ```
 4. **Read File $\to$ Clean $\to$ Save to File (with custom size and padding)**:
    ```bash
-   auto-icon raw_image.png -o cleaned_icon.png --size 1024 --padding 5.0
+   icon-normalizer raw_image.png -o cleaned_icon.png --size 1024 --padding 5.0
    ```
 
 ---

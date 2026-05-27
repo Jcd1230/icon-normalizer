@@ -7,11 +7,11 @@ mod floodfill;
 mod processor;
 
 #[derive(Parser, Debug)]
-#[command(name = "auto-icon")]
+#[command(name = "icon-normalizer")]
 #[command(version)]
 #[command(
     about = "Clean up and resize images to create high-quality square transparent icons.",
-    long_about = "auto-icon takes an image, removes the background using flood fill, crops it to the content boundaries, pads/centers it, and resizes it to a square icon."
+    long_about = "icon-normalizer takes an image, removes the background using flood fill, crops it to the content boundaries, pads/centers it, and resizes it to a square icon."
 )]
 struct Args {
     /// Path to the input image file. If omitted, and --clipboard is set, reads from clipboard.

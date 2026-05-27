@@ -1,8 +1,8 @@
 [package]
-name = "auto-icon"
+name = "icon-normalizer"
 version = "0.1.0"
 edition = "2024"
-default-run = "auto-icon"
+default-run = "icon-normalizer"
 
 
 [dependencies]
