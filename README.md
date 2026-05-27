@@ -8,7 +8,8 @@
 - **Edge Feathering**: Antialiases borders with a configurable distance-based transparency gradient to eliminate jagged edges.
 - **Autocrop & Squaring**: Automatically crops the image to the bounding box of non-transparent pixels and scales it to fit a square container.
 - **Premultiplied Alpha Scaling**: Prevents color bleeding and "white/black halo" artifacts during interpolation when scaling down.
-- **Wayland Clipboard Support**: Copy directly from/to the clipboard with the `-c` / `--clipboard` flag (powered by `wl-clipboard`).
+- **1.0% Default Padding**: Fits the icon tightly into its container, maximizing canvas space.
+- **Cross-Platform Clipboard Support**: Copy directly from/to the clipboard with the `-c` / `--clipboard` flag on Linux, macOS, and Windows.
 
 ---
 
@@ -22,10 +23,17 @@ cargo build --release
 
 The compiled binary will be located at `target/release/icon-normalizer`.
 
-### Prerequisites for Clipboard Support (Wayland)
-To use the clipboard features, you must have `wl-clipboard` installed on your system:
-- **Arch Linux**: `sudo pacman -S wl-clipboard`
-- **Fedora/Ubuntu/Debian**: `sudo apt install wl-clipboard` or `sudo dnf install wl-clipboard`
+### Prerequisites for Clipboard Support
+The clipboard feature is dependency-free at compile-time and routes clipboard actions dynamically to the platform's native tools:
+- **Linux (Wayland)**: Requires `wl-clipboard` (runs `wl-paste`/`wl-copy`).
+- **Linux (X11)**: Requires `xclip` (runs `xclip`).
+- **macOS**: Built-in (routes hex PNG data natively via AppleScript/`osascript`).
+- **Windows**: Built-in (routes PNG bytes natively via PowerShell).
+
+To install requirements on Linux:
+- **Arch Linux**: `sudo pacman -S wl-clipboard xclip`
+- **Fedora/RHEL**: `sudo dnf install wl-clipboard xclip`
+- **Ubuntu/Debian**: `sudo apt install wl-clipboard xclip`
 
 ---
 
@@ -42,11 +50,11 @@ icon-normalizer [INPUT_PATH] [FLAGS] [OPTIONS]
 - `-f`, `--feather <PIXELS>`: Radius for edge smoothing (default: `2`).
 - `-p`, `--padding <0.0-45.0>`: Padding percentage around the icon content (default: `1.0%`).
 - `--no-flood`: Skip the background removal step (useful if the image is already transparent).
-- `-c`, `--clipboard`: Read input from and/or write output to the Wayland system clipboard.
+- `-c`, `--clipboard`: Read input from and/or write output to the system clipboard.
 
 ### Examples
 
-1. **Read Clipboard $\to$ Clean $\to$ Write Clipboard**:
+1. **Full Clipboard Pipeline (Read Clipboard $\to$ Clean $\to$ Write Clipboard)**:
    ```bash
    icon-normalizer -c
    ```
@@ -58,7 +66,11 @@ icon-normalizer [INPUT_PATH] [FLAGS] [OPTIONS]
    ```bash
    icon-normalizer raw_image.png -c
    ```
-4. **Read File $\to$ Clean $\to$ Save to File (with custom size and padding)**:
+4. **Read File $\to$ Clean $\to$ Save to File**:
+   ```bash
+   icon-normalizer raw_image.png -o cleaned_icon.png
+   ```
+5. **Read File $\to$ Clean $\to$ Save to File (with custom size and padding)**:
    ```bash
    icon-normalizer raw_image.png -o cleaned_icon.png --size 1024 --padding 5.0
    ```
