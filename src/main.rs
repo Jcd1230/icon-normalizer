@@ -47,24 +47,109 @@ struct Args {
     clipboard: bool,
 }
 
-fn read_clipboard_image() -> Vec<u8> {
-    let output = process::Command::new("wl-paste")
-        .arg("-t")
-        .arg("image/png")
-        .output();
+#[cfg(target_os = "macos")]
+fn hex_decode(s: &str) -> Result<Vec<u8>, std::num::ParseIntError> {
+    let cleaned: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    (0..cleaned.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16))
+        .collect()
+}
 
-    match output {
-        Ok(out) if out.status.success() => out.stdout,
-        Ok(out) => {
-            let err_msg = String::from_utf8_lossy(&out.stderr);
-            eprintln!("Error running wl-paste: {}", err_msg);
-            process::exit(1);
+fn read_clipboard_image() -> Vec<u8> {
+    #[cfg(target_os = "linux")]
+    {
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        if is_wayland {
+            let output = process::Command::new("wl-paste")
+                .arg("-t")
+                .arg("image/png")
+                .output();
+            if let Ok(out) = output {
+                if out.status.success() {
+                    return out.stdout;
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("Failed to execute wl-paste: {}", e);
-            eprintln!("Make sure wl-clipboard is installed and you are running under a Wayland session.");
-            process::exit(1);
+
+        // Fallback to xclip
+        let output = process::Command::new("xclip")
+            .arg("-selection")
+            .arg("clipboard")
+            .arg("-t")
+            .arg("image/png")
+            .arg("-o")
+            .output();
+        match output {
+            Ok(out) if out.status.success() => return out.stdout,
+            Ok(out) => {
+                let err_msg = String::from_utf8_lossy(&out.stderr);
+                eprintln!("xclip failed: {}", err_msg);
+            }
+            Err(e) => {
+                eprintln!("Failed to execute xclip: {}", e);
+            }
         }
+
+        eprintln!("Error: Clipboard access failed. Make sure wl-clipboard (for Wayland) or xclip (for X11) is installed.");
+        process::exit(1);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // AppleScript outputs hex string starting with "«data PNGf..." and ending with "»"
+        let output = process::Command::new("osascript")
+            .arg("-e")
+            .arg("get the clipboard as «class PNGf»")
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let hex_str = String::from_utf8_lossy(&out.stdout);
+                if let Some(start) = hex_str.find("«data PNGf") {
+                    let hex_content = &hex_str[start + 10..];
+                    if let Some(end) = hex_content.find('»') {
+                        let hex = &hex_content[..end];
+                        if let Ok(bytes) = hex_decode(hex) {
+                            return bytes;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("Error: Failed to read image from macOS clipboard using AppleScript.");
+        process::exit(1);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("icon_normalizer_clip.png");
+        let ps_script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $img = [System.Windows.Forms::Clipboard]::GetImage(); \
+             if ($img) {{ $img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }}",
+            temp_file.to_string_lossy().replace('\'', "''")
+        );
+        let output = process::Command::new("powershell")
+            .arg("-Command")
+            .arg(&ps_script)
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() && temp_file.exists() {
+                if let Ok(bytes) = std::fs::read(&temp_file) {
+                    let _ = std::fs::remove_file(&temp_file);
+                    return bytes;
+                }
+            }
+        }
+        eprintln!("Error: Failed to read image from Windows clipboard using PowerShell.");
+        process::exit(1);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        eprintln!("Error: Clipboard integration not supported on this platform.");
+        process::exit(1);
     }
 }
 
@@ -76,39 +161,109 @@ fn write_clipboard_image(img: &image::RgbaImage) {
         process::exit(1);
     }
 
-    let mut child = process::Command::new("wl-copy")
-        .arg("-t")
-        .arg("image/png")
-        .stdin(process::Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to execute wl-copy: {}", e);
-            eprintln!("Make sure wl-clipboard is installed.");
-            process::exit(1);
-        });
-
+    #[cfg(target_os = "linux")]
     {
-        let stdin = child.stdin.as_mut().unwrap();
-        if let Err(e) = stdin.write_all(&png_bytes) {
-            eprintln!("Failed to write image data to wl-copy stdin: {}", e);
-            process::exit(1);
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        let cmd = if is_wayland { "wl-copy" } else { "xclip" };
+        let mut child_cmd = process::Command::new(cmd);
+        if is_wayland {
+            child_cmd.arg("-t").arg("image/png");
+        } else {
+            child_cmd.arg("-selection").arg("clipboard").arg("-t").arg("image/png");
         }
+
+        let mut child = child_cmd
+            .stdin(process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to execute {}: {}", cmd, e);
+                process::exit(1);
+            });
+
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            if let Err(e) = stdin.write_all(&png_bytes) {
+                eprintln!("Failed to write image data to {} stdin: {}", cmd, e);
+                process::exit(1);
+            }
+        }
+
+        match child.wait() {
+            Ok(status) if status.success() => {
+                println!("Output successfully copied to clipboard.");
+            }
+            Ok(status) => {
+                eprintln!("{} exited with error status: {}", cmd, status);
+                process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Failed to wait for {}: {}", cmd, e);
+                process::exit(1);
+            }
+        }
+        return;
     }
 
-    match child.wait() {
-        Ok(status) if status.success() => {
-            println!("Output successfully copied to clipboard.");
+    #[cfg(target_os = "macos")]
+    {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("icon_normalizer_out.png");
+        if std::fs::write(&temp_file, &png_bytes).is_ok() {
+            let script = format!(
+                "set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)",
+                temp_file.to_string_lossy()
+            );
+            let output = process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output();
+            let _ = std::fs::remove_file(&temp_file);
+            if let Ok(out) = output {
+                if out.status.success() {
+                    println!("Output successfully copied to clipboard.");
+                    return;
+                }
+            }
         }
-        Ok(status) => {
-            eprintln!("wl-copy exited with error status: {}", status);
-            process::exit(1);
+        eprintln!("Error: Failed to copy image to macOS clipboard using AppleScript.");
+        process::exit(1);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("icon_normalizer_out.png");
+        if std::fs::write(&temp_file, &png_bytes).is_ok() {
+            let ps_script = format!(
+                "Add-Type -AssemblyName System.Windows.Forms; \
+                 $img = [System.Drawing.Image]::FromFile('{}'); \
+                 [System.Windows.Forms::Clipboard]::SetImage($img); \
+                 $img.Dispose();",
+                temp_file.to_string_lossy().replace('\'', "''")
+            );
+            let output = process::Command::new("powershell")
+                .arg("-Command")
+                .arg(&ps_script)
+                .output();
+            let _ = std::fs::remove_file(&temp_file);
+            if let Ok(out) = output {
+                if out.status.success() {
+                    println!("Output successfully copied to clipboard.");
+                    return;
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("Failed to wait for wl-copy: {}", e);
-            process::exit(1);
-        }
+        eprintln!("Error: Failed to copy image to Windows clipboard using PowerShell.");
+        process::exit(1);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        eprintln!("Error: Clipboard integration not supported on this platform.");
+        process::exit(1);
     }
 }
+
 
 fn main() {
     let args = Args::parse();
