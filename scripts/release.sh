@@ -18,7 +18,7 @@ if [[ -n "${JIRI_RELEASE_TRUNK:-}" ]]; then
   trunk="${JIRI_RELEASE_TRUNK}"
 else
   # Check if there is a tracked bookmark matching main or master, or just get the first bookmark
-  trunk="$(jj bookmark list --tracked -r 'trunk()' -T name | head -n1)"
+  trunk="$(jj bookmark list --tracked -r 'trunk()' -T 'name ++ "\n"' | head -n1)"
 fi
 
 if [[ -z "${trunk}" ]]; then
