@@ -1,4 +1,4 @@
-use image::{GrayImage, RgbaImage, Luma};
+use image::{GrayImage, Luma, RgbaImage};
 use std::collections::VecDeque;
 
 /// Calculates the squared Euclidean distance between two RGBA pixels (ignoring alpha).
@@ -168,7 +168,10 @@ mod tests {
 
         // The edge of the red square (3,3) is next to background, so it should be feathered (between 0 and 255)
         let edge_val = feathered.get_pixel(3, 3)[0];
-        assert!(edge_val > 0 && edge_val < 255, "Edge value {} should be feathered", edge_val);
+        assert!(
+            edge_val > 0 && edge_val < 255,
+            "Edge value {} should be feathered",
+            edge_val
+        );
     }
 }
-

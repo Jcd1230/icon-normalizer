@@ -1,4 +1,4 @@
-use image::{imageops::FilterType, RgbaImage};
+use image::{RgbaImage, imageops::FilterType};
 
 /// Premultiplies the alpha channel of an RGBA image in place.
 /// This prevents color bleeding (halos) at transparent borders when resizing.
@@ -43,10 +43,18 @@ pub fn find_bounding_box(img: &RgbaImage, alpha_threshold: u8) -> Option<(u32, u
         for x in 0..width {
             let pixel = img.get_pixel(x, y);
             if pixel[3] > alpha_threshold {
-                if x < min_x { min_x = x; }
-                if x > max_x { max_x = x; }
-                if y < min_y { min_y = y; }
-                if y > max_y { max_y = y; }
+                if x < min_x {
+                    min_x = x;
+                }
+                if x > max_x {
+                    max_x = x;
+                }
+                if y < min_y {
+                    min_y = y;
+                }
+                if y > max_y {
+                    max_y = y;
+                }
                 found = true;
             }
         }
@@ -88,8 +96,7 @@ pub fn square_center_and_resize(
 
     // 2. Scale cropped image to fit within the inner_box_size, preserving aspect ratio
     let (w, h) = cropped_img.dimensions();
-    let scale_factor = (inner_box_size as f32 / w as f32)
-        .min(inner_box_size as f32 / h as f32);
+    let scale_factor = (inner_box_size as f32 / w as f32).min(inner_box_size as f32 / h as f32);
 
     let new_w = (w as f32 * scale_factor).round().max(1.0) as u32;
     let new_h = (h as f32 * scale_factor).round().max(1.0) as u32;
@@ -184,4 +191,3 @@ mod tests {
         assert_eq!(squared.get_pixel(50, 50)[3], 255);
     }
 }
-
