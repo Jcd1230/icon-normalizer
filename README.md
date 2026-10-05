@@ -27,6 +27,15 @@ cargo build --release
 
 The compiled binary will be located at `target/release/icon-normalizer`.
 
+To build and install just `icon-normalizer` into `~/.local/bin`:
+
+```bash
+mise run install
+```
+
+Run this task again after local changes to rebuild and replace the installed binary.
+Make sure `~/.local/bin` is on your `PATH`.
+
 ### Generating Shell Completions
 
 You can generate completion scripts for your favorite shell and source them. For example, for the `fish` shell:

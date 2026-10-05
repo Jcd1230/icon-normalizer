@@ -1,0 +1,3 @@
+[tasks.install]
+description = "Build and install icon-normalizer to ~/.local/bin"
+run = 'cargo install --path . --root "$HOME/.local" --locked --force --bin icon-normalizer'
